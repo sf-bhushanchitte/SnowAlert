@@ -7,7 +7,7 @@ from .utils import yaml_dump
 from tenable.io import TenableIO
 from datetime import datetime
 
-from runners.helpers import db
+from runners.helpers import db, log
 from runners.helpers.dbconfig import ROLE as SA_ROLE
 
 CONNECTION_OPTIONS = [
@@ -16,6 +16,7 @@ CONNECTION_OPTIONS = [
         'options': [
             {'value': 'user', 'label': "Tenable Users"},
             {'value': 'agent', 'label': "Tenable Agents"},
+            {'value': 'vuln', 'label': "Tenable Vulnerabilites"},
         ],
         'default': 'user',
         'name': 'connection_type',
@@ -65,6 +66,31 @@ AGENT_LANDING_TABLE = [
     ('RAW', 'VARIANT'),
     ('EXPORT_AT', 'TIMESTAMP_LTZ'),
 ]
+
+VULN_LANDING_TABLE = [
+    ('RAW', 'VARIANT'),
+    ('EXPORT_AT', 'TIMESTAMP_LTZ'),
+]
+
+
+def ingest_vulns(tio, table_name):
+    last_export_time = next(db.fetch(f'SELECT MAX(export_at) as time FROM data.{table_name}'))['TIME']
+    timestamp = datetime.utcnow()
+
+    if last_export_time is None or (timestamp - last_export_time).total_seconds() > 86400:
+        vulns = tio.exports.vulns()
+
+        db.insert(
+            table=f'data.{table_name}',
+            values=[(
+                vuln,
+                timestamp
+            ) for vuln in vulns],
+            select=db.derive_insert_select(VULN_LANDING_TABLE),
+            columns=db.derive_insert_columns(AGENT_LANDING_TABLE)
+        )
+    else:
+        log.info('Not time to import Tenable Vulnerabilities yet')
 
 
 def ingest_users(tio, table_name):
@@ -128,17 +154,32 @@ def get_agent_data(tio, access, secret):
 
 
 def ingest_agents(tio, table_name, options):
-    agents = get_agent_data(tio, options['token'], options['secret'])
+    last_export_time = next(db.fetch(f'SELECT MAX(export_at) as time FROM data.{table_name}'))['TIME']
     timestamp = datetime.utcnow()
-    db.insert(
-        table=f'data.{table_name}',
-        values=[(
-            agent,
-            timestamp
-        ) for agent in agents],
-        select=db.derive_insert_select(AGENT_LANDING_TABLE),
-        columns=db.derive_insert_columns(AGENT_LANDING_TABLE)
-    )
+    import pdb; pdb.set_trace()
+
+    if last_export_time is None or (timestamp - last_export_time).total_seconds() > 86400:
+        agents = get_agent_data(tio, options['token'], options['secret'])
+        db.insert(
+            table=f'data.{table_name}',
+            values=[(
+                agent,
+                timestamp
+            ) for agent in agents],
+            select=db.derive_insert_select(AGENT_LANDING_TABLE),
+            columns=db.derive_insert_columns(AGENT_LANDING_TABLE)
+        )
+    else:
+        log.info('Not time to import Tenable Agents')
+
+
+def create_vuln_table(connection_name, options):
+    table_name = f'data.tenable_settings_{connection_name}_vuln_connection'
+
+    comment = yaml_dump(module='tenable_settings', **options)
+
+    db.create_table(table_name, cols=VULN_LANDING_TABLE, comment=comment)
+    db.execute(f'GRANT INSERT, SELECT ON {table_name} TO ROLE {SA_ROLE}')
 
 
 def create_user_table(connection_name, options):
@@ -157,13 +198,12 @@ secret: {secret}
 
 
 def create_agent_table(connection_name, options):
-    base_name = f'tenable_settings_{connection_name}_agent'
-    landing_table = f'data.{base_name}_connection'
+    table_name = f'tenable_settings_{connection_name}_agent_connection'
 
     comment = yaml_dump(module='tenable_settings', **options)
 
-    db.create_table(landing_table, cols=AGENT_LANDING_TABLE, comment=comment)
-    db.execute(f'GRANT INSERT, SELECT ON {landing_table} TO ROLE {SA_ROLE}')
+    db.create_table(table_name, cols=AGENT_LANDING_TABLE, comment=comment)
+    db.execute(f'GRANT INSERT, SELECT ON {table_name} TO ROLE {SA_ROLE}')
 
 
 def connect(connection_name, options):
@@ -171,6 +211,8 @@ def connect(connection_name, options):
         create_user_table(connection_name, options)
     elif options['connection_type'] == 'agent':
         create_agent_table(connection_name, options)
+    elif options['connection_type'] == 'vuln':
+        create_vuln_table(connection_name, options)
 
     return {
         'newStage': 'finalized',
@@ -184,3 +226,5 @@ def ingest(table_name, options):
         ingest_users(tio, table_name)
     elif table_name.endswith('AGENT_CONNECTION'):
         ingest_agents(tio, table_name, options)
+    elif table_name.endswith('VULN_CONNECTION'):
+        ingest_vulns(tio, table_name)
