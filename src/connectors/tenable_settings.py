@@ -2,6 +2,8 @@
 Collect Tenable Settings using a Service User’s API Key
 """
 
+import requests
+from .utils import yaml_dump
 from tenable.io import TenableIO
 from datetime import datetime
 
@@ -13,6 +15,7 @@ CONNECTION_OPTIONS = [
         'type': 'select',
         'options': [
             {'value': 'user', 'label': "Tenable Users"},
+            {'value': 'agent', 'label': "Tenable Agents"},
         ],
         'default': 'user',
         'name': 'connection_type',
@@ -56,6 +59,11 @@ USER_LANDING_TABLE = [
     ('TWO_FACTOR', 'VARIANT'),
     ('LAST_LOGIN', 'TIMESTAMP_LTZ'),
     ('UUID_ID', 'STRING(100)'),
+]
+
+AGENT_LANDING_TABLE = [
+    ('RAW', 'VARIANT'),
+    ('EXPORT_AT', 'TIMESTAMP_LTZ'),
 ]
 
 
@@ -106,8 +114,35 @@ def ingest_users(tio, table_name):
     )
 
 
+def get_agent_data(tio, access, secret):
+    headers = {"X-ApiKeys": f"accessKey={access}; secretKey={secret}"}
+
+    r = requests.get(url='https://cloud.tenable.com/scanners/1/agent-groups', headers=headers)
+    groups = r.json()['groups']
+
+    agents = []
+    for group in groups:
+        agents += tio.agent_groups.details(group['id'])['agents']
+
+    return agents
+
+
+def ingest_agents(tio, table_name, options):
+    agents = get_agent_data(tio, options['token'], options['secret'])
+    timestamp = datetime.utcnow()
+    db.insert(
+        table=f'data.{table_name}',
+        values=[(
+            agent,
+            timestamp
+        ) for agent in agents],
+        select=db.derive_insert_select(AGENT_LANDING_TABLE),
+        columns=db.derive_insert_columns(AGENT_LANDING_TABLE)
+    )
+
+
 def create_user_table(connection_name, options):
-    table_name = f'data.TENABLE_SETTINGS_{connection_name}_USER_CONNECTION'
+    table_name = f'data.tenable_settings_{connection_name}_user_connection'
     token = options['token']
     secret = options['secret']
     comment = f"""
@@ -121,9 +156,21 @@ secret: {secret}
     db.execute(f'GRANT INSERT, SELECT ON {table_name} TO ROLE {SA_ROLE}')
 
 
+def create_agent_table(connection_name, options):
+    base_name = f'tenable_settings_{connection_name}_agent'
+    landing_table = f'data.{base_name}_connection'
+
+    comment = yaml_dump(module='tenable_settings', **options)
+
+    db.create_table(landing_table, cols=AGENT_LANDING_TABLE, comment=comment)
+    db.execute(f'GRANT INSERT, SELECT ON {landing_table} TO ROLE {SA_ROLE}')
+
+
 def connect(connection_name, options):
     if options['connection_type'] == 'user':
         create_user_table(connection_name, options)
+    elif options['connection_type'] == 'agent':
+        create_agent_table(connection_name, options)
 
     return {
         'newStage': 'finalized',
@@ -135,3 +182,5 @@ def ingest(table_name, options):
     tio = TenableIO(options['token'], options['secret'])
     if table_name.endswith('USER_CONNECTION'):
         ingest_users(tio, table_name)
+    elif table_name.endswith('AGENT_CONNECTION'):
+        ingest_agents(tio, table_name, options)
