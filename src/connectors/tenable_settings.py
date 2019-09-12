@@ -78,7 +78,12 @@ def ingest_vulns(tio, table_name):
     timestamp = datetime.utcnow()
 
     if last_export_time is None or (timestamp - last_export_time).total_seconds() > 86400:
-        vulns = tio.exports.vulns()
+        log.info("Exporting vulnerabilities...")
+        v = tio.exports.vulns()
+        vulns = []
+        for vuln in v:
+            vulns.append(vuln)
+        log.info("Export completed, beginning ingest to snowflake...")
 
         db.insert(
             table=f'data.{table_name}',
@@ -90,7 +95,7 @@ def ingest_vulns(tio, table_name):
             columns=db.derive_insert_columns(AGENT_LANDING_TABLE)
         )
     else:
-        log.info('Not time to import Tenable Vulnerabilities yet')
+        log.info('Not time to import Tenable vulnerabilities yet')
 
 
 def ingest_users(tio, table_name):
@@ -156,7 +161,6 @@ def get_agent_data(tio, access, secret):
 def ingest_agents(tio, table_name, options):
     last_export_time = next(db.fetch(f'SELECT MAX(export_at) as time FROM data.{table_name}'))['TIME']
     timestamp = datetime.utcnow()
-    import pdb; pdb.set_trace()
 
     if last_export_time is None or (timestamp - last_export_time).total_seconds() > 86400:
         agents = get_agent_data(tio, options['token'], options['secret'])
