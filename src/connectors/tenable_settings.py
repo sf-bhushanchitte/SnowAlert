@@ -5,7 +5,7 @@ Collect Tenable Settings using a Service User’s API Key
 import requests
 from .utils import yaml_dump
 from tenable.io import TenableIO
-from datetime import datetime
+from datetime import datetime, timezone
 
 from runners.helpers import db, log
 from runners.helpers.dbconfig import ROLE as SA_ROLE
@@ -76,7 +76,7 @@ VULN_LANDING_TABLE = [
 
 def ingest_vulns(tio, table_name):
     last_export_time = next(db.fetch(f'SELECT MAX(export_at) as time FROM data.{table_name}'))['TIME']
-    timestamp = datetime.utcnow()
+    timestamp = datetime.now(timezone.utc)
 
     if last_export_time is None or (timestamp - last_export_time).total_seconds() > 86400:
         log.info("Exporting vulnerabilities...")
@@ -98,7 +98,7 @@ def ingest_vulns(tio, table_name):
 
 def ingest_users(tio, table_name):
     users = tio.users.list()
-    timestamp = datetime.utcnow()
+    timestamp = datetime.now(timezone.utc)
 
     for user in users:
         user['role'] = {
@@ -158,7 +158,7 @@ def get_agent_data(tio, access, secret):
 
 def ingest_agents(tio, table_name, options):
     last_export_time = next(db.fetch(f'SELECT MAX(export_at) as time FROM data.{table_name}'))['TIME']
-    timestamp = datetime.utcnow()
+    timestamp = datetime.now(timezone.utc)
 
     if last_export_time is None or (timestamp - last_export_time).total_seconds() > 86400:
         agents = get_agent_data(tio, options['token'], options['secret'])
